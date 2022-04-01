@@ -1,18 +1,9 @@
 name: Create Release
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'build-receipt'
-      - 'run-receipt'
   workflow_dispatch:
     inputs:
       TAG:
         required: false
-
-env:
-  BUILD_REPO: "paketobuildpacks/build"
-  RUN_REPO: "paketobuildpacks/run"
 
 jobs:
   create-release:
@@ -22,19 +13,6 @@ jobs:
     - uses: actions/checkout@v2
       with:
         fetch-depth: 0
-
-    - uses: google-github-actions/setup-gcloud@v0
-      with:
-        version: '270.0.0'
-        service_account_key: ${{ secrets.GCR_PUSH_BOT_JSON_KEY }}
-
-    - name: Configure docker gcloud auth
-      run: gcloud auth configure-docker
-
-    - name: Docker login
-      run: |
-        docker login -u ${{ secrets.PAKETO_BUILDPACKS_DOCKERHUB_USERNAME }} --password-stdin \
-          < <(echo "${{ secrets.PAKETO_BUILDPACKS_DOCKERHUB_PASSWORD }}")
 
     - name: Get version
       id: get-version
@@ -49,111 +27,6 @@ jobs:
 
         echo "::set-output name=version::${version}"
 
-    - name: Publish Images
-      id: publish
-      run: |
-        tag='${{ steps.get-version.outputs.version }}'
-
-        build_base_image="$(cat .github/ci-artifacts/build-base-image)"
-        run_base_image="$(cat .github/ci-artifacts/run-base-image)"
-
-        published_build_base_image="$(echo "$build_base_image" | sed 's|paketotesting/build-rc@|paketobuildpacks/build@|')"
-        published_run_base_image="$(echo "$run_base_image" | sed 's|paketotesting/run-rc@|paketobuildpacks/run@|')"
-
-        build_cnb_image="$(cat .github/ci-artifacts/build-cnb-image)"
-        run_cnb_image="$(cat .github/ci-artifacts/run-cnb-image)"
-
-        echo "FROM ${build_cnb_image}" | \
-          docker build -t "paketobuildpacks/build:tiny-cnb" \
-          --label "io.buildpacks.stack.metadata={\"base-image\": \"${published_build_base_image}\"}" -
-
-        echo "FROM ${run_cnb_image}" | \
-          docker build -t "paketobuildpacks/run:tiny-cnb" \
-          --label "io.buildpacks.stack.metadata={\"base-image\": \"${published_run_base_image}\"}" -
-
-        sudo skopeo copy "docker://${build_base_image}" "docker://paketobuildpacks/build:tiny"
-        sudo skopeo copy "docker://${build_base_image}" "docker://paketobuildpacks/build:${tag}-tiny"
-
-        docker push "paketobuildpacks/build:tiny-cnb"
-        sudo skopeo copy "docker://paketobuildpacks/build:tiny-cnb" "docker://paketobuildpacks/build:${tag}-tiny-cnb"
-
-        sudo skopeo copy "docker://${run_base_image}" "docker://paketobuildpacks/run:tiny"
-        sudo skopeo copy "docker://${run_base_image}" "docker://paketobuildpacks/run:${tag}-tiny"
-
-        docker push "paketobuildpacks/run:tiny-cnb"
-        sudo skopeo copy "docker://paketobuildpacks/run:tiny-cnb" "docker://paketobuildpacks/run:${tag}-tiny-cnb"
-        sudo skopeo copy "docker://paketobuildpacks/run:tiny-cnb" "docker://gcr.io/paketo-buildpacks/run:tiny-cnb"
-
-    - name: Publish Cloudfoundry Images
-      run: |
-        tag='${{ steps.get-version.outputs.version }}'
-
-        build_base_image="$(cat .github/ci-artifacts/build-base-image)"
-        run_base_image="$(cat .github/ci-artifacts/run-base-image)"
-
-        docker login -u ${{ secrets.CLOUDFOUNDRY_DOCKERHUB_USERNAME }} --password-stdin \
-        < <(echo "${{ secrets.CLOUDFOUNDRY_DOCKERHUB_PASSWORD }}")
-
-        sudo skopeo copy "docker://${build_base_image}" "docker://cloudfoundry/build:tiny-cnb"
-        sudo skopeo copy "docker://${build_base_image}" "docker://cloudfoundry/build:${tag}-tiny-cnb"
-
-        sudo skopeo copy "docker://paketobuildpacks/build:tiny-cnb" "docker://cloudfoundry/build:tiny-cnb"
-        sudo skopeo copy "docker://paketobuildpacks/build:tiny-cnb" "docker://cloudfoundry/build:${tag}-tiny-cnb"
-
-        sudo skopeo copy "docker://${run_base_image}" "docker://cloudfoundry/run:tiny"
-        sudo skopeo copy "docker://${run_base_image}" "docker://cloudfoundry/run:${tag}-tiny"
-
-        sudo skopeo copy "docker://paketobuildpacks/run:tiny-cnb" "docker://cloudfoundry/run:tiny-cnb"
-        sudo skopeo copy "docker://paketobuildpacks/run:tiny-cnb" "docker://cloudfoundry/run:${tag}-tiny-cnb"
-
-    - name: Get Image Refs
-      id: image-refs
-      shell: bash --noprofile --norc -eo pipefail {0}
-      run: |
-        tag='${{ steps.get-version.outputs.version }}'
-
-        run_base_sha="$(skopeo inspect "docker://${RUN_REPO}:${tag}-tiny" | jq .Digest -r)"
-        run_cnb_sha="$(skopeo inspect "docker://${RUN_REPO}:${tag}-tiny-cnb" | jq .Digest -r)"
-        build_base_sha="$(skopeo inspect "docker://${BUILD_REPO}:${tag}-tiny" | jq .Digest -r)"
-        build_cnb_sha="$(skopeo inspect "docker://${BUILD_REPO}:${tag}-tiny-cnb" | jq .Digest -r)"
-
-        echo "::set-output name=run_base_sha::${run_base_sha}"
-        echo "::set-output name=run_cnb_sha::${run_cnb_sha}"
-        echo "::set-output name=build_base_sha::${build_base_sha}"
-        echo "::set-output name=build_cnb_sha::${build_cnb_sha}"
-
-    - name: Generate receipt diffs
-      id: receipt
-      uses: paketo-buildpacks/stacks/actions/receipt-diff@main
-
-    - name: Get USN List
-      id: get-usns
-      run: |
-        file_sha="$(curl -sL --fail -u 'paketo-bot:${{ secrets.PAKETO_BOT_GITHUB_TOKEN }}' \
-          api.github.com/repos/paketo-buildpacks/stack-usns/git/trees/main | \
-          jq -r '.tree[] | select(.path == "usns") | .sha')"
-
-        curl -sL --fail -u 'paketo-bot:${{ secrets.PAKETO_BOT_GITHUB_TOKEN }}' \
-          api.github.com/repos/paketo-buildpacks/stack-usns/git/blobs/${file_sha} | \
-          jq -r '.content' | base64 --decode > full-usn-list
-
-        echo "::set-output name=usn_path::full-usn-list"
-
-    - name: Create Release Notes
-      id: create-release-notes
-      uses: paketo-buildpacks/stacks/actions/release-notes@main
-      with:
-        build_base_image: "${{ env.BUILD_REPO }}@${{ steps.image-refs.outputs.build_base_sha }}"
-        build_cnb_image: "${{ env.BUILD_REPO }}@${{ steps.image-refs.outputs.build_cnb_sha }}"
-        run_cnb_image: "${{ env.RUN_REPO }}@${{ steps.image-refs.outputs.run_cnb_sha }}"
-        run_base_image: "${{ env.RUN_REPO }}@${{ steps.image-refs.outputs.run_base_sha }}"
-        build_receipt_diff: ${{ steps.receipt.outputs.build_diff }}
-        run_receipt_diff: ${{ steps.receipt.outputs.run_diff }}
-        relevant_usns: usns
-        all_usns: ${{ steps.get-usns.outputs.usn_path }}
-        release_version: ${{ steps.get-version.outputs.version }}
-        stack: tiny
-
     - name: Create Release
       uses: paketo-buildpacks/github-config/actions/release/create@main
       with:
@@ -162,5 +35,21 @@ jobs:
         tag_name: ${{ steps.get-version.outputs.version }}
         target_commitish: ${{ github.sha }}
         name: ${{ steps.get-version.outputs.version }}
-        body: ${{ steps.create-release-notes.outputs.release_body }}
-        draft: false
+        body: "hi"
+        draft: true
+
+    - name: File Issue
+      if: ${{ failure() }}
+      run: |
+        echo "${{ secrets.PAKETO_BOT_GITHUB_TOKEN }}" | gh auth login --with-token
+        release_issue=$(gh issue list --json number --label release-issue --jq .[0].number)
+
+        if [ -n $release_issue ]; \
+        then gh issue comment $release_issue --body "Another failure occurred: https://github.com/${{github.repository}}/actions/runs/${{github.run_id}}"; \
+        else gh issue create \
+        --title "Failure: create-release workflow" \
+        --label "release-issue" \
+        --body "[Create release workflow](https://github.com/${{github.repository}}/actions/runs/${{github.run_id}}) failed to run. Please take a look to ensure CVE patches can be released. (cc @paketo-buildpacks/stacks-maintainers)" \
+        -R ${{github.repository}}; \
+        fi
+        echo $release_issue
