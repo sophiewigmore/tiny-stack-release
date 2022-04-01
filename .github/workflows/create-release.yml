@@ -14,27 +14,14 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Get version
-      id: get-version
-      run: |
-        version=
-        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          version=${{ github.event.inputs.TAG }}
-        fi
-        if [[ "${tag}" == '' ]]; then
-          version="$(cat .github/ci-artifacts/version)"
-        fi
-
-        echo "::set-output name=version::${version}"
-
     - name: Create Release
       uses: paketo-buildpacks/github-config/actions/release/create@main
       with:
         repo: ${{ github.repository }}
         token: ${{ secrets.PAKETO_BOT_GITHUB_TOKEN }}
-        tag_name: ${{ steps.get-version.outputs.version }}
+        tag_name: ${{ github.event.inputs.TAG }}
         target_commitish: ${{ github.sha }}
-        name: ${{ steps.get-version.outputs.version }}
+        name: ${{ github.event.inputs.TAG }}
         body: "hi"
         draft: true
 
