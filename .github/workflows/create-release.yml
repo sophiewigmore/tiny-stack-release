@@ -28,7 +28,7 @@ jobs:
     - name: File Issue
       if: ${{ failure() }}
       run: |
-        echo "${{ secrets.PAKETO_BOT_GITHUB_TOKEN }}" | gh auth login --with-token
+        echo "${{ secrets.SOPHIE_GITHUB_TOKEN }}" | gh auth login --with-token
         release_issue=$(gh issue list --json number --label release-issue --jq .[0].number)
 
         if [ -n $release_issue ]; \
